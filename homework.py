@@ -30,12 +30,6 @@ logger.addHandler(
     logging.StreamHandler()
 )
 
-HOMEWORK_STATUSES = {
-    'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
-    'reviewing': 'Работа взята на проверку ревьюером.',
-    'rejected': 'Работа проверена: у ревьюера есть замечания.'
-}
-
 
 def send_message(bot, message):
     """Отправляет сообщение в Telegram чат."""
@@ -49,32 +43,35 @@ def send_message(bot, message):
 
 def get_api_answer(current_timestamp):
     """Делает запрос к единственному эндпоинту API-сервиса."""
+    timestamp = current_timestamp
+    if not isinstance(timestamp, (float, int)):
+        raise TypeError('Ошибка формата даты')
+    params = {'from_date': timestamp}
     try:
-        timestamp = current_timestamp or int(time.time())
-        if not isinstance(timestamp, (float, int)):
-            raise TypeError('Ошибка формата даты')
-        params = {'from_date': timestamp}
         response = requests.get(settings.ENDPOINT, headers=HEADERS,
                                 params=params)
         if response.status_code == HTTPStatus.OK:
             return response.json()
         else:
-            msg = (
-                f'Эндпоинт {settings.ENDPOINT} недоступен.'
-                f' Код ответа API: {response.status_code}')
+            msg = ('Ошибка при обращении к API.'
+                   f' Код ответа API: {response.status_code}')
             logger.error(msg)
-            raise exceptions.APIResponseStatusCodeException(msg)
+        raise exceptions.APIResponseStatusCodeException(msg)
     except Exception as error:
         raise logging.error(f'Ошибка при обращении к API: {error}')
 
 
 def check_response(response):
     """Проверяет ответ API на корректность."""
-    homeworks = response['homeworks']
+    if type(response) is not dict:
+        msg = 'Ответ API не является словарем'
+        logger.error(msg)
+        raise TypeError(msg)
     if 'homeworks' not in response:
         msg = 'Ошибка доступа по ключу homeworks'
         logger.error(msg)
         raise KeyError(msg)
+    homeworks = response['homeworks']
     if not isinstance(homeworks, list):
         msg = 'Неправильный тип данных от API'
         logger.error(msg)
@@ -89,16 +86,16 @@ def check_response(response):
 def parse_status(homework):
     """Извлекает статус конкретной домашней работы."""
     homework_name = homework.get('homework_name')
-    if 'homework_name' not in homework:
+    if homework_name is None:
         msg = 'Ошибка доступа по ключу homework_name'
         logger.error(msg)
         raise KeyError(msg)
     homework_status = homework.get('status')
-    if 'status' not in homework:
+    if homework_status is None:
         msg = 'Ошибка доступа по ключу status'
         logger.error(msg)
         raise KeyError(msg)
-    verdict = HOMEWORK_STATUSES.get(homework_status)
+    verdict = settings.HOMEWORK_STATUSES.get(homework_status)
     if verdict is None:
         msg = 'Неизвестный статус'
         logger.error(msg)
@@ -119,18 +116,18 @@ def main():
         raise exceptions.MissingRequiredTokenException(msg)
 
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    current_timestamp = int(time.time())
+    current_timestamp = int(time.time() - 100000)
 
     while True:
         try:
             response = get_api_answer(current_timestamp)
             homework = check_response(response)
-            if not homework:
-                logger.debug('Обновлений нет')
-            else:
-                message = parse_status(homework)
+            homework_status = homework[0].get('status')
+            if homework_status is not None:
+                message = parse_status(homework[0])
                 send_message(bot, message)
-            current_timestamp = homework['status']
+            else:
+                logger.debug('Обновления статуса нет')
 
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
